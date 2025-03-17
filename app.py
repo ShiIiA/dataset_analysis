@@ -7,157 +7,417 @@ Original file is located at
     https://colab.research.google.com/drive/1rRSegdTULlczjwu11IQzYDFAIJmlE8TF
 """
 
+import os
+import base64
 import streamlit as st
 import pandas as pd
 import numpy as np
-import seaborn as sns
-import matplotlib.pyplot as plt
-import torch
-import time
-import random
 import plotly.express as px
-import openai
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torchvision.models as models
+import torchvision.transforms as transforms
+import matplotlib.pyplot as plt
+import seaborn as sns
 from PIL import Image
-import open_clip
+from fairlearn.metrics import demographic_parity_difference, equalized_odds_difference
+import shap
+from scipy.stats import chi2_contingency
+from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, recall_score
+from torchvision.models import DenseNet121_Weights
 
-# --- 🔐 OpenAI API Key (Securely stored in Streamlit Secrets) ---
-openai.api_key = st.secrets["OPENAI_API_KEY"]
-
-# --- Load Hugging Face Model (BiomedCLIP) ---
-st.sidebar.subheader("🤖 Loading Hugging Face Model...")
-@st.cache_resource
-def load_huggingface_model():
-    model, preprocess_train, preprocess_val = open_clip.create_model_and_transforms('hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224')
-    tokenizer = open_clip.get_tokenizer('hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224')
-    return model, preprocess_train, preprocess_val, tokenizer
-
-hf_model, preprocess_train, preprocess_val, hf_tokenizer = load_huggingface_model()
-st.sidebar.success("✅ Model Loaded: BiomedCLIP-PubMedBERT")
-
-# --- UI Theme Colors ---
-primary_color = "#21917b"
-secondary_color = "#004126"
-highlight_color = "#32aece"
-warning_color = "#f6cc1d"
-background_color = "#f4f4f4"
-
-# --- Header Branding ---
-st.image("snake_logo.png", width=150)
-st.markdown(f"<h1 style='color:{primary_color}; text-align:center;'>🐍 AI Bias Analyzer</h1>", unsafe_allow_html=True)
-
-# --- Sidebar: "Coming Soon" Login Section ---
-st.sidebar.markdown("🔐 **User Authentication** (Coming Soon...)")
-st.sidebar.info("Login & user access control will be available soon!", icon="🔜")
-
-# --- AI Chatbot for Fairness Q&A ---
-st.sidebar.subheader("🤖 AI Chatbot: Ask About Fairness")
-user_question = st.sidebar.text_input("💬 Ask the AI Chatbot about fairness...")
-if user_question:
-    response = openai.ChatCompletion.create(
-        model="gpt-4",
-        messages=[{"role": "user", "content": user_question}]
-    )
-    st.sidebar.write(f"**🤖 AI:** {response['choices'][0]['message']['content']}")
-
-# --- Upload CSV Data ---
-st.markdown(f"<h2 style='color:{secondary_color};'>📊 Upload Your Dataset</h2>", unsafe_allow_html=True)
-uploaded_file = st.file_uploader("Upload a CSV file", type=["csv"], help="Ensure your CSV file contains labeled data for fairness analysis.")
-
-@st.cache_data
-def load_large_csv(file):
-    """Loads large CSV files efficiently using caching."""
-    return pd.read_csv(file)
-
-if uploaded_file:
-    df = load_large_csv(uploaded_file)
-    st.success(f"✅ Successfully loaded: {uploaded_file.name}")
-    st.write(df.head())
-
-    # --- EDA Dashboard ---
-    st.subheader("📊 Exploratory Data Analysis (EDA)")
-    st.write("### Dataset Summary")
-    st.write(df.describe())
-
-    st.write("### Column Distribution")
-    selected_col = st.selectbox("Select a column to visualize: ", df.columns)
-    fig = px.histogram(df, x=selected_col, title=f"Distribution of {selected_col}")
-    st.plotly_chart(fig, use_container_width=True)
-
-    # --- Column Selection ---
-    all_columns = list(df.columns)
-    text_col = st.selectbox("📝 Select Text Column for AI Processing:", all_columns, help="This column should contain text for model inference.")
-    label_col = st.selectbox("🏷️ Select Label Column:", all_columns, help="This column should contain the ground truth labels.")
-
-    # --- Process Dataset with BiomedCLIP Model ---
-    st.subheader("🤖 AI Model Processing Data...")
-    def process_with_hf_model(text):
-        tokens = hf_tokenizer(text)
-        return hf_model.encode_text(tokens).tolist()
-
-    df["AI Prediction"] = df[text_col].apply(lambda x: process_with_hf_model(x))
-
-    # --- Compare Predictions with Labels ---
-    df["Match"] = df.apply(lambda row: "✅ Match" if row[label_col] in row["AI Prediction"] else "❌ Mismatch", axis=1)
-    st.write(df[[text_col, label_col, "AI Prediction", "Match"]].head(10))
-
-    # --- Bias Metrics Calculation ---
-    def calculate_bias_metrics(df, label_col, ai_col):
-        """Computes fairness metrics including Disparate Impact & Equalized Odds."""
-        dpd = round(random.uniform(0.1, 0.9), 2)
-        eod = round(random.uniform(0.05, 0.8), 2)
-        demographic_parity = round(random.uniform(0.1, 0.9), 2)
-        statistical_parity = round(random.uniform(0.1, 0.9), 2)
-        return {
-            "Disparate Impact": dpd,
-            "Equalized Odds": eod,
-            "Demographic Parity": demographic_parity,
-            "Statistical Parity": statistical_parity
-        }
-
-    bias_metrics = calculate_bias_metrics(df, label_col, "AI Prediction")
-
-    # --- Bias Scorecards with Threshold Comparison ---
-    def bias_scorecard(metrics):
-        """Displays fairness metrics with thresholds for comparison."""
-        threshold = {
-            "Disparate Impact": 0.8,
-            "Equalized Odds": 0.1,
-            "Demographic Parity": 0.8,
-            "Statistical Parity": 0.8
-        }
-
-        for metric, value in metrics.items():
-            status = "✅ Fair" if value >= threshold[metric] else "❌ Potential Bias"
-            st.metric(f"📊 {metric}", f"{value:.2f}", status)
-
-    st.subheader("⚖️ Fairness Metrics Analysis")
-    bias_scorecard(bias_metrics)
-
-    # --- Bias Heatmap ---
-    def plot_bias_heatmap(metrics):
-        """Visualizes fairness metrics in a heatmap."""
-        df_metrics = pd.DataFrame(metrics, index=["Bias Scores"])
-        fig, ax = plt.subplots(figsize=(6, 3))
-        sns.heatmap(df_metrics, annot=True, cmap="coolwarm", center=0, linewidths=0.5, ax=ax)
-        st.pyplot(fig)
-
-    st.subheader("📊 Bias Heatmap")
-    plot_bias_heatmap(bias_metrics)
-
-    # --- Fairness Insights Section ---
-    st.subheader("📢 AI Fairness Insights")
-    fairness_explanation = """
-    - **Disparate Impact**: Measures if different groups receive different outcomes.
-    - **Equalized Odds**: Checks if AI predictions are equally accurate for all groups.
-    - **Demographic Parity**: Ensures the model makes equal predictions across all demographics.
-    - **Statistical Parity**: Measures if AI treats groups proportionally based on their representation.
+# ============== BACKGROUND & PROGRESS BAR STYLING ==============
+def set_unified_background():
     """
-    st.markdown(fairness_explanation)
+    Repeats a caduceus symbol (medical snakes) across the entire Streamlit app background.
+    Change 'background-size' or the URL for a different effect.
+    """
+    st.markdown(
+        """
+        <style>
+        .stApp {
+            background-image: url("https://upload.wikimedia.org/wikipedia/commons/thumb/7/7f/Army_US_Caduceus.svg/1200px-Army_US_Caduceus.svg.png");
+            background-repeat: repeat;
+            background-size: 200px 200px;
+            background-position: center;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
 
-# --- Clear Cache Button with Confirmation ---
-if st.button("🧹 Clear Cache & Restart"):
-    if st.confirm("Are you sure you want to clear the cache? This will reset the session."):
-        st.cache_data.clear()
-        st.experimental_rerun()
+def set_gradient_progress_bar():
+    """
+    Applies custom CSS to give the built-in st.progress() bar
+    a nice gradient look.
+    """
+    st.markdown(
+        """
+        <style>
+        /* Select the actual bar inside the progress component */
+        div[data-testid="stProgressBar"] > div[role="progressbar"] > div {
+            background: linear-gradient(to right, #4facfe, #00f2fe);
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
 
-st.button("🔄 Refresh Metrics", on_click=st.experimental_rerun)
+st.set_page_config(page_title="🐍 Snakelets - AI Bias Analyzer", layout="wide")
+set_unified_background()   # Inject the repeating caduceus background
+set_gradient_progress_bar() # Custom gradient styling for progress bar
+
+# === Branding & Disclaimer ===
+st.title("🐍 Snakelets - AI Bias Analyzer")
+st.markdown("**A multi-step tool to explore disease detection fairness using CheXNet.**")
+st.info("Disclaimer: This application is for research and educational purposes only. Not for clinical diagnosis.")
+
+os.environ["TORCH_HOME"] = os.path.expanduser("~/.cache/torch")
+if __name__ == "__main__":
+    torch.multiprocessing.freeze_support()
+
+
+# === LOAD CHEXNET MODEL ===
+@st.cache_resource
+def load_chexnet_model():
+    """Loads pre-trained DenseNet-121 (CheXNet) model for disease detection."""
+    model = models.densenet121(weights=DenseNet121_Weights.IMAGENET1K_V1)
+    model.classifier = nn.Linear(1024, 2)  # Binary classification: Disease/No Disease
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
+    model.eval()
+    return model, device
+
+try:
+    model, device = load_chexnet_model()
+    st.success("✅ Model Loaded Successfully!")
+except Exception as e:
+    st.error(f"🚨 Error loading model: {e}")
+
+
+# === HELPER FUNCTIONS FOR LABELS ===
+def unify_gender_label(label):
+    """
+    Converts any string containing known male/female keywords to 'M' or 'F'.
+    Otherwise returns 'Unknown'.
+    """
+    text = str(label).strip().lower()
+    male_keywords = ["m", "male", "man", "masculin"]
+    female_keywords = ["f", "female", "woman", "femme"]
+
+    if any(kw in text for kw in male_keywords):
+        return "M"
+    if any(kw in text for kw in female_keywords):
+        return "F"
+    return "Unknown"
+
+def unify_disease_label(label):
+    """
+    Converts strings containing 'no finding', 'none', 'negative', etc. into 'No Disease'.
+    Everything else stays as-is.
+    """
+    text = str(label).strip().lower()
+    no_disease_keywords = ["no finding", "none", "negative", "normal", "0", "false", "no disease"]
+    if any(kw in text for kw in no_disease_keywords):
+        return "No Disease"
+    return label
+
+@st.cache_resource
+def preprocess_image(image):
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor()
+    ])
+    return transform(image).unsqueeze(0)
+
+
+# === Session State for DataFrames ===
+if "df" not in st.session_state:
+    st.session_state.df = None
+if "df_results" not in st.session_state:
+    st.session_state.df_results = pd.DataFrame(columns=["Image_ID", "Gender", "Prediction", "Probability"])
+
+
+# ============== MULTI-STEP WIZARD TABS ==============
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "1) Upload Data",
+    "2) Explore Data",
+    "3) Model Prediction",
+    "4) Gender Bias Analysis",
+    "5) Fairness & Mitigation"
+])
+
+
+# ============== TAB 1: UPLOAD DATA ==============
+with tab1:
+    st.subheader("Step 1: Upload Your Dataset (CSV/XLSX)")
+    uploaded_file = st.file_uploader("📂 Upload dataset", type=["csv", "xlsx"])
+
+    if uploaded_file:
+        try:
+            if uploaded_file.name.endswith(".csv"):
+                st.session_state.df = pd.read_csv(uploaded_file)
+            else:
+                st.session_state.df = pd.read_excel(uploaded_file)
+
+            st.write("**Preview of Uploaded Data:**")
+            st.dataframe(st.session_state.df.head())
+        except Exception as e:
+            st.error(f"🚨 Error loading file: {e}")
+    else:
+        st.info("Please upload a CSV or XLSX file to continue.")
+
+
+# ============== TAB 2: EXPLORE DATA ==============
+with tab2:
+    st.subheader("Step 2: Explore & Prepare Your Data")
+    df = st.session_state.df
+
+    if df is not None:
+        # Prompt user to pick columns
+        gender_col = st.selectbox("🛑 Select Gender Column:", df.columns)
+        disease_col = st.selectbox("🩺 Select Disease Column:", df.columns)
+        image_id_col = st.selectbox("🖼️ Select Image ID Column:", df.columns)
+
+        # Standardize labels
+        df[gender_col] = df[gender_col].apply(unify_gender_label)
+        df[disease_col] = df[disease_col].apply(unify_disease_label)
+
+        # Store column names
+        st.session_state.gender_col = gender_col
+        st.session_state.disease_col = disease_col
+        st.session_state.image_id_col = image_id_col
+
+        # Additional EDA
+        with st.expander("📈 Additional Dataset Analysis"):
+            numeric_cols = df.select_dtypes(include=["float", "int"]).columns.tolist()
+            if numeric_cols:
+                st.markdown("**Basic Statistics**")
+                st.dataframe(df[numeric_cols].describe())
+
+                # Correlation heatmap
+                corr = df[numeric_cols].corr()
+                fig, ax = plt.subplots()
+                sns.heatmap(corr, annot=True, cmap="Blues", ax=ax)
+                st.pyplot(fig)
+            else:
+                st.write("No numeric columns found for correlation analysis.")
+
+        # Show distributions
+        st.subheader("🔢 Distributions in Selected Columns")
+        # Gender distribution
+        gender_counts = df[gender_col].value_counts()
+        fig_gender = px.bar(gender_counts, x=gender_counts.index, y=gender_counts.values, title="Gender Distribution")
+        st.plotly_chart(fig_gender)
+
+        # Disease distribution
+        disease_counts = df[disease_col].value_counts()
+        st.write(f"Unique disease labels: {list(disease_counts.index)}")
+
+        # Let user pick diseases to display
+        default_diseases = disease_counts.index[:5].tolist() if len(disease_counts) >= 5 else disease_counts.index.tolist()
+        selected_diseases = st.multiselect("Select Diseases to Visualize:", disease_counts.index.tolist(), default=default_diseases)
+
+        filtered_counts = disease_counts[disease_counts.index.isin(selected_diseases)]
+        fig_disease = px.bar(filtered_counts, x=filtered_counts.index, y=filtered_counts.values, title="Disease Distribution")
+        st.plotly_chart(fig_disease)
+
+    else:
+        st.info("Data not uploaded or not loaded correctly. Please go to Step 1.")
+
+
+# ============== TAB 3: MODEL PREDICTION ==============
+with tab3:
+    st.subheader("Step 3: AI Model Prediction on X-Ray Images")
+    df = st.session_state.df
+
+    if df is not None and "gender_col" in st.session_state:
+        gender_col = st.session_state.gender_col
+        disease_col = st.session_state.disease_col
+        image_id_col = st.session_state.image_id_col
+    else:
+        st.info("Please complete Steps 1 & 2 first.")
+        st.stop()
+
+    # File uploader for images
+    uploaded_images = st.file_uploader("📸 Upload X-Ray Images", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
+    threshold = st.slider("Decision Threshold for 'Disease' classification", 0.0, 1.0, 0.5, 0.01)
+
+    if uploaded_images:
+        # Initialize a progress bar for the entire batch
+        progress_bar = st.progress(0)
+        total_images = len(uploaded_images)
+
+        for i, img in enumerate(uploaded_images, start=1):
+            st.write(f"**Processing Image {i}/{total_images}**")
+            st.image(img, caption=f"Uploaded X-Ray: {img.name}", width=300)
+
+            try:
+                image = Image.open(img).convert("RGB")
+                tensor_img = preprocess_image(image).to(device)
+
+                with torch.no_grad():
+                    logits = model(tensor_img)
+                    probs = F.softmax(logits, dim=1)
+                    disease_prob = probs[0, 1].item()
+                    predicted_label = 1 if disease_prob >= threshold else 0
+
+                new_row = {
+                    "Image_ID": img.name,
+                    "Gender": "Unknown",
+                    "Prediction": predicted_label,
+                    "Probability": disease_prob
+                }
+                st.session_state.df_results = pd.concat(
+                    [st.session_state.df_results, pd.DataFrame([new_row])],
+                    ignore_index=True
+                )
+
+                st.success(f"✅ Prediction: {'Disease Detected' if predicted_label == 1 else 'No Disease'} | Prob: {disease_prob:.2%}")
+
+            except Exception as e:
+                st.error(f"🚨 Error making prediction: {e}")
+
+            # Update the progress bar (0 to 100)
+            progress_percent = int((i / total_images) * 100)
+            progress_bar.progress(progress_percent)
+
+    else:
+        st.info("Upload one or more images to generate predictions.")
+
+
+# ============== TAB 4: GENDER BIAS ANALYSIS ==============
+with tab4:
+    st.subheader("Step 4: Gender Bias Analysis")
+    df = st.session_state.df
+    df_results = st.session_state.df_results
+
+    if df is None or df_results.empty:
+        st.info("Please complete Steps 1-3 to have data and predictions.")
+        st.stop()
+
+    gender_col = st.session_state.gender_col
+    disease_col = st.session_state.disease_col
+    image_id_col = st.session_state.image_id_col
+
+    # Merge the real gender from df if possible
+    if "Unknown" in df_results["Gender"].values:
+        df_merged_gender = pd.merge(
+            df_results,
+            df[[image_id_col, gender_col]],
+            how="left",
+            left_on="Image_ID",
+            right_on=image_id_col
+        )
+        df_merged_gender["Gender"] = df_merged_gender[gender_col].fillna("Unknown")
+        st.session_state.df_results = df_merged_gender[["Image_ID", "Gender", "Prediction", "Probability"]]
+
+    df_results = st.session_state.df_results
+    total_female = df_results[df_results["Gender"] == "F"].shape[0]
+    total_male = df_results[df_results["Gender"] == "M"].shape[0]
+
+    female_disease = df_results[(df_results["Gender"] == "F") & (df_results["Prediction"] == 1)].shape[0]
+    male_disease = df_results[(df_results["Gender"] == "M") & (df_results["Prediction"] == 1)].shape[0]
+
+    female_rate = female_disease / total_female if total_female > 0 else 0
+    male_rate = male_disease / total_male if total_male > 0 else 0
+
+    st.write(f"**Female Detection Rate:** {female_rate:.2%}  (F: {total_female} images)")
+    st.write(f"**Male Detection Rate:** {male_rate:.2%}  (M: {total_male} images)")
+
+    bias_difference = abs(female_rate - male_rate)
+    st.write(f"**Bias Difference (Female vs. Male):** {bias_difference:.4f}")
+
+    if bias_difference > 0.1:
+        st.warning("⚠️ Significant bias detected toward one gender! Consider mitigating steps.")
+    else:
+        st.success("✅ Bias difference is within acceptable limits.")
+
+
+# ============== TAB 5: FAIRNESS & MITIGATION ==============
+with tab5:
+    st.subheader("Step 5: Fairness & Mitigation Options")
+    st.markdown("### Advanced Fairness Analysis")
+
+    df = st.session_state.df
+    df_results = st.session_state.df_results
+
+    if df is None or df_results.empty:
+        st.info("Please complete Steps 1-4 first.")
+        st.stop()
+
+    gender_col = st.session_state.gender_col
+    disease_col = st.session_state.disease_col
+    image_id_col = st.session_state.image_id_col
+
+    advanced_fairness = st.checkbox("Use advanced fairness approach with predictions")
+    if advanced_fairness:
+        if df is not None and image_id_col in df.columns:
+            df_merged = pd.merge(
+                df,
+                df_results,
+                how="inner",
+                left_on=image_id_col,
+                right_on="Image_ID"
+            )
+
+            adv_target_col = st.selectbox("Select Ground-Truth Disease Column (Advanced):", df.columns)
+            adv_sensitive_col = st.selectbox("Select Sensitive Attribute (Advanced):", df.columns)
+
+            if adv_target_col and adv_sensitive_col:
+                try:
+                    y_true = df_merged[adv_target_col]
+                    y_pred = df_merged["Prediction"]
+                    sensitive = df_merged[adv_sensitive_col]
+
+                    d_parity = demographic_parity_difference(y_true, y_pred, sensitive_features=sensitive)
+                    eod = equalized_odds_difference(y_true, y_pred, sensitive_features=sensitive)
+
+                    st.write(f"**Demographic Parity Difference:** {d_parity:.4f}")
+                    st.write(f"**Equalized Odds Difference:** {eod:.4f}")
+
+                    acc = accuracy_score(y_true, y_pred)
+                    prec = precision_score(y_true, y_pred, zero_division=0)
+                    rec = recall_score(y_true, y_pred, zero_division=0)
+                    st.write(f"**Accuracy:** {acc:.2%}")
+                    st.write(f"**Precision:** {prec:.2%}")
+                    st.write(f"**Recall:** {rec:.2%}")
+
+                    cm = confusion_matrix(y_true, y_pred)
+                    fig_cm = px.imshow(
+                        cm,
+                        text_auto=True,
+                        labels=dict(x="Predicted", y="True", color="Count"),
+                        x=["No Disease", "Disease"],
+                        y=["No Disease", "Disease"],
+                        title="Confusion Matrix"
+                    )
+                    st.plotly_chart(fig_cm)
+
+                except Exception as e:
+                    st.error(f"🚨 Error computing advanced metrics: {e}")
+
+    st.markdown("---")
+    st.markdown("### Possible Bias Mitigation Approaches")
+    st.markdown("""
+    **1. Resampling/Upweighting**
+    Adjust the training data distribution so underrepresented groups (e.g., female examples) are more frequent, reducing bias.
+
+    **2. Threshold Adjustment**
+    Use different decision thresholds for different subgroups to equalize metrics (e.g., recall, TPR).
+
+    **3. Reweighing**
+    Weight samples during training to promote fair outcomes across sensitive groups.
+
+    **4. Adversarial Debiasing**
+    Incorporate an adversarial network that tries to predict the sensitive attribute from model outputs, pushing the model to remove sensitive cues.
+
+    **5. Post-Processing**
+    After receiving predictions, apply a fairness correction (e.g., calibrating predictions or randomizing decisions to equalize outcomes).
+
+    These techniques can be explored via the [Fairlearn docs](https://fairlearn.org/) or other specialized libraries.
+    """)
+
+    st.success("🎉 Analysis & mitigation recommendations complete! Thanks for using Snakelets' AI Bias Analyzer.")

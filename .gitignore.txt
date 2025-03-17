@@ -1,0 +1,11 @@
+# Conda environment directories
+env/
+envs/
+.conda/
+*.dll
+*.lib
+*.exe
+
+# Typical Python ignores
+__pycache__/
+*.pyc
